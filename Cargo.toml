@@ -1,0 +1,17 @@
+[package]
+name = "logi-bolt-guard"
+version = "0.1.0"
+edition = "2021"
+description = "Guard the pairing table of a Logitech Bolt USB receiver (046D:C548): list, unpair, verify, and a daemon that ejects anything not allowlisted. Raw HID++, no Logitech software."
+authors = ["is-a-zzzz"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/is-a-zzzz/logi-bolt-guard"
+readme = "README.md"
+keywords = ["logitech", "bolt", "hid", "hidpp", "receiver"]
+categories = ["command-line-utilities", "hardware-support"]
+
+[dependencies]
+hidapi = "2.6"
+
+[profile.release]
+strip = true
