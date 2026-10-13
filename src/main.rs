@@ -495,6 +495,97 @@ fn cmd_verify() -> Result<bool, Error> {
     Ok(clean)
 }
 
+/// Battery of paired devices via HID++ 2.0. Root GetFeature is unreliable
+/// through Bolt receivers (sleeping devices answer all-zeros), so the feature
+/// table is enumerated through FEATURE_SET, which HID++ 2.0 pins at index 1.
+/// Looks for UNIFIED_BATTERY (0x1004, reply [soc%, level, status]) or the
+/// classic BATTERY_STATUS (0x1000, reply [level%, next, status-flags]).
+fn cmd_battery() -> Result<(), Error> {
+    let bolt = open_bolt_pausing()?;
+    for slot in 1..=MAX_SLOTS {
+        if bolt.read_reg(REG_RECEIVER_INFO, &[0x50 + slot]).is_err() {
+            continue; // empty slot
+        }
+        // wake the link: shallow-sleeping devices answer zeros or nothing
+        let mut awake = false;
+        for _ in 0..10 {
+            if matches!(bolt.ping(slot), Ok(Some(v)) if v.starts_with("4.")) {
+                awake = true;
+                break;
+            }
+            sleep(Duration::from_millis(300));
+        }
+        if !awake {
+            println!("slot {slot}: not answering ping (asleep or off) — move the mouse and retry");
+            continue;
+        }
+        let count = loop_retry(5, || bolt.xfer(slot, 0x0108, &[], READ_TIMEOUT));
+        let Some(count) = count.filter(|p| !p.is_empty() && p[0] > 0).map(|p| p[0]) else {
+            println!("slot {slot}: FeatureSet not answering");
+            continue;
+        };
+        let mut found: Option<(u16, u8)> = None; // (feature id, index)
+        for i in 1..=count {
+            let Some(p) = loop_retry(3, || bolt.xfer(slot, 0x0118, &[i], READ_TIMEOUT)) else {
+                break;
+            };
+            if p.len() < 2 {
+                break;
+            }
+            let id = ((p[0] as u16) << 8) | p[1] as u16;
+            if id == 0x1004 || id == 0x1000 {
+                found = Some((id, i));
+                break;
+            }
+        }
+        let Some((id, idx)) = found else {
+            println!("slot {slot}: no battery feature exposed");
+            continue;
+        };
+        let Some(b) = loop_retry(3, || bolt.xfer(slot, ((idx as u16) << 8) | 0x08, &[], READ_TIMEOUT))
+            .filter(|p| p.len() >= 3)
+        else {
+            println!("slot {slot}: battery read failed");
+            continue;
+        };
+        if id == 0x1004 {
+            let status = match b[2] {
+                0 => "discharging",
+                1 => "charging",
+                2 => "charging slow",
+                3 => "charging fast",
+                4 => "charge complete",
+                5 => "recharging below optimal",
+                6 => "invalid battery",
+                _ => "unknown",
+            };
+            println!("slot {slot}: battery {}% ({status})", b[0]);
+        } else {
+            let charging = b[2] & 0x80 != 0;
+            println!("slot {slot}: battery {}%{}", b[0] & 0x7F, if charging { " (charging)" } else { "" });
+        }
+    }
+    Ok(())
+}
+
+/// Retry an HID++ request a few times — needed while a device is waking up.
+fn loop_retry<F>(tries: u8, mut f: F) -> Option<Vec<u8>>
+where
+    F: FnMut() -> Result<Vec<u8>, Error>,
+{
+    for k in 0..tries {
+        match f() {
+            Ok(v) if !v.is_empty() && v.iter().any(|&b| b != 0) => return Some(v),
+            Ok(_) => sleep(Duration::from_millis(300)), // zeros = still waking
+            Err(_) => sleep(Duration::from_millis(400)),
+        }
+        if k + 1 < tries {
+            continue;
+        }
+    }
+    f().ok()
+}
+
 /// Which slots should be ejected so that only allowlisted unit_ids remain,
 /// each in a single slot (preferring the slot that holds the live link).
 fn plan_ejections(devices: &[PairedDevice], allow: &[[u8; 4]], live_slots: &[u8]) -> Vec<u8> {
@@ -710,6 +801,7 @@ fn usage() {
         "usage: logi-bolt-guard [list | ping | verify | unpair <slot> | guard [opts]]\n\
          \x20 list                     show the receiver's pairing table (default)\n\
          \x20 ping                     ping device slots 1..=6 to find the live link\n\
+         \x20 battery                  read battery level of paired devices\n\
          \x20 verify                   check the receiver is in a clean state\n\
          \x20 unpair <n>               remove the pairing in slot n\n\
          \x20 guard [--allow ids] [--interval secs] [--once]\n\
@@ -725,7 +817,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         "list" => cmd_list().map(|_| true),
         "ping" => cmd_ping().map(|_| true),
-        "verify" => cmd_verify(),
+        "battery" => cmd_battery().map(|_| true),
         "unpair" => match args.get(2).and_then(|s| s.parse::<u8>().ok()) {
             Some(slot) if (1..=MAX_SLOTS).contains(&slot) => cmd_unpair(slot).map(|_| true),
             _ => {

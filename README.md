@@ -11,6 +11,7 @@
 |---|---|
 | `logi-bolt-guard` | 列出接收器配对表(槽位、设备名、类型、wpid、unit-id) |
 | `logi-bolt-guard ping` | 逐槽位 HID++ ping,找出当前活跃链路(如 `4.5`) |
+| `logi-bolt-guard battery` | 读取已配对设备电池电量(如 `slot 2: battery 15% (discharging)`) |
 | `logi-bolt-guard unpair <n>` | 解绑指定槽位(解绑即断链) |
 | `logi-bolt-guard verify` | 健康检查:恰好一台设备、无重复、链路在线;退出码 0/1,可脚本化 |
 | `logi-bolt-guard guard --allow <id>` | 常驻守护:轮询 + 事件监听,自动踢出白名单以外的设备和重复槽位 |
@@ -96,6 +97,7 @@ macOS 上接收器的 HID 节点同一时刻只能被一个进程打开。守护
 - 解绑:长写 `0x82C1`,payload `[0x03, slot]`。
 - 活链路探测:HID++ 2.0 根 ping `[0x10, dev, 0x00, 0x10, 0x00, 0x00, rand]`,应答形如 `4.5`。
 - 通知使能:寄存器 `0x00` 写 `WIRELESS(0x000100) | SOFTWARE_PRESENT(0x000800)`,短帧。SubId `0x41` 携带链路起落:address `0x10` = Bolt 协议,flags bit6(`0x40`)置位 = 断链,bit5 = 加密,后跟 wpid(小端)。
+- 设备侧 HID++ 2.0 坑:Bolt 接收器下 ROOT GetFeature 不可靠(设备浅睡时应答退化为全零)→ 功能表改由 **FeatureSet(HID++ 2.0 固定在索引 1)** 枚举,先 ping 唤醒再查询;电池读 UNIFIED_BATTERY (0x1004) fn0,应答 `[soc%, level, status]`。
 - macOS 坑:pyhidapi/rust-hidapi 的带超时读可能永久阻塞 → 全程非阻塞 + 自管超时;两个 `0xFF00` vendor collection 共享同一 IOKit 路径。
 
 ## 致谢
